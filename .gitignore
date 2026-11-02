@@ -1,0 +1,5 @@
+/msh
+/msh-asan
+/tests/test_lexer
+*.o
+core
