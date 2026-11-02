@@ -1,7 +1,7 @@
 #include "builtins.h"
 #include "shell.h"
+#include "vars.h"
 
-#include <ctype.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
@@ -21,13 +21,13 @@ static int builtin_cd(int argc, char *const argv[])
         return 2;
     }
     if (argc == 1) {                       /* plain `cd` goes home */
-        target = getenv("HOME");
+        target = vars_get("HOME");
         if (!target) {
             fprintf(stderr, "%s: cd: HOME not set\n", MSH_NAME);
             return 1;
         }
     } else if (strcmp(argv[1], "-") == 0) { /* `cd -` goes back */
-        target = getenv("OLDPWD");
+        target = vars_get("OLDPWD");
         if (!target) {
             fprintf(stderr, "%s: cd: OLDPWD not set\n", MSH_NAME);
             return 1;
@@ -35,6 +35,12 @@ static int builtin_cd(int argc, char *const argv[])
     } else {
         target = argv[1];
     }
+
+    /* Copy target: it may point into the variable table, and we are
+     * about to overwrite OLDPWD (which `cd -` read it from). */
+    char tgt[PATH_MAX];
+    snprintf(tgt, sizeof tgt, "%s", target);
+    target = tgt;
 
     char old[PATH_MAX];
     bool have_old = getcwd(old, sizeof old) != NULL;
@@ -44,13 +50,13 @@ static int builtin_cd(int argc, char *const argv[])
         return 1;
     }
 
-    /* Keep PWD/OLDPWD in the environment, like every POSIX shell, so
-     * child programs and `cd -` see the right values. */
+    /* Keep PWD/OLDPWD up to date, like every POSIX shell, so child
+     * programs and `cd -` see the right values. */
     char now[PATH_MAX];
     if (have_old)
-        setenv("OLDPWD", old, 1);
+        vars_set("OLDPWD", old);
     if (getcwd(now, sizeof now)) {
-        setenv("PWD", now, 1);
+        vars_set("PWD", now);
         if (argc == 2 && strcmp(argv[1], "-") == 0)
             printf("%s\n", now);           /* `cd -` prints where it went */
     }
@@ -105,6 +111,67 @@ static int builtin_exit(int argc, char *const argv[])
     return (int)(code & 0xFF);
 }
 
+/* ---------- export [-p] [name[=value]...] ---------- */
+
+static int builtin_export(int argc, char *const argv[])
+{
+    if (argc == 1 || (argc == 2 && strcmp(argv[1], "-p") == 0)) {
+        vars_print_exported();
+        return 0;
+    }
+
+    int status = 0;
+    for (int i = 1; i < argc; i++) {
+        const char *arg = argv[i];
+        const char *eq = strchr(arg, '=');
+        size_t nlen = eq ? (size_t)(eq - arg) : strlen(arg);
+
+        if (!vars_is_name(arg, nlen)) {
+            fprintf(stderr, "%s: export: `%s': not a valid identifier\n",
+                    MSH_NAME, arg);
+            status = 1;                   /* keep going with the others */
+            continue;
+        }
+        char *name = strndup(arg, nlen);
+        if (!name || (eq && vars_set(name, eq + 1) < 0) ||
+            vars_export(name) < 0) {
+            fprintf(stderr, "%s: export: out of memory\n", MSH_NAME);
+            free(name);
+            return 1;
+        }
+        free(name);
+    }
+    return status;
+}
+
+/* ---------- unset [-v] name... ---------- */
+
+static int builtin_unset(int argc, char *const argv[])
+{
+    int status = 0;
+    int i = 1;
+    bool only_vars = false;
+    if (i < argc && strcmp(argv[i], "-v") == 0) {
+        only_vars = true;
+        i++;
+    }
+    for (; i < argc; i++) {
+        if (!vars_is_name(argv[i], strlen(argv[i]))) {
+            /* Plain `unset` may also remove a *function* of that name, and
+             * function names are looser than variable names, so bash just
+             * ignores it. Only `unset -v` insists on a valid variable. */
+            if (!only_vars)
+                continue;
+            fprintf(stderr, "%s: unset: `%s': not a valid identifier\n",
+                    MSH_NAME, argv[i]);
+            status = 1;
+            continue;
+        }
+        vars_unset(argv[i]);
+    }
+    return status;
+}
+
 /* ---------- dispatch table ---------- */
 
 typedef int (*builtin_fn)(int, char *const[]);
@@ -116,6 +183,8 @@ static const struct {
     {"cd", builtin_cd},
     {"exit", builtin_exit},
     {"quit", builtin_exit},
+    {"export", builtin_export},
+    {"unset", builtin_unset},
 };
 
 #define N_BUILTINS (sizeof BUILTINS / sizeof BUILTINS[0])

@@ -88,6 +88,59 @@ static const struct {
     {"<", TOK_LESS}, {">", TOK_GREAT}, {"(", TOK_LPAREN}, {")", TOK_RPAREN},
 };
 
+/* ---------- ${...} and "..." scanning (mutually recursive) ---------- */
+
+/* p points at an opening '"'. Return pointer just past the closing '"',
+ * or NULL. A ${...} inside may itself contain quotes, so we recurse. */
+static const char *skip_dquoted(const char *p)
+{
+    p++;
+    while (*p && *p != '"') {
+        if (*p == '\\' && p[1]) {
+            p += 2;
+        } else if (p[0] == '$' && p[1] == '{') {
+            if (!(p = lex_skip_braced(p)))
+                return NULL;
+        } else {
+            p++;
+        }
+    }
+    return *p == '"' ? p + 1 : NULL;
+}
+
+const char *lex_skip_braced(const char *p)
+{
+    p += 2;                                 /* past "${" */
+    while (*p && *p != '}') {
+        if (*p == '\\' && p[1]) {
+            p += 2;
+        } else if (*p == '\'') {
+            const char *close = strchr(p + 1, '\'');
+            if (!close)
+                return NULL;
+            p = close + 1;
+        } else if (*p == '"') {
+            if (!(p = skip_dquoted(p)))
+                return NULL;
+        } else if (p[0] == '$' && p[1] == '{') {
+            if (!(p = lex_skip_braced(p)))
+                return NULL;
+        } else {
+            p++;
+        }
+    }
+    return *p == '}' ? p + 1 : NULL;
+}
+
+/* Append the bytes [from, to) to w. */
+static bool sbuf_putn(sbuf_t *w, const char *from, const char *to)
+{
+    for (; from < to; from++)
+        if (!sbuf_putc(w, *from))
+            return false;
+    return true;
+}
+
 /* ---------- the lexer ---------- */
 
 /* Read one WORD starting at *pp. Advances *pp past it. */
@@ -96,7 +149,16 @@ static lex_status_t read_word(const char **pp, sbuf_t *w)
     const char *p = *pp;
 
     while (*p && !is_blank(*p) && !is_op_start(*p)) {
-        if (*p == '\'') {
+        if (p[0] == '$' && p[1] == '{') {
+            /* ${...} is one unit: blanks and operators inside it don't
+             * end the word (think ${x:-a b} or ${x:-a|b}). */
+            const char *end = lex_skip_braced(p);
+            if (!end)
+                return LEX_ERR_UNTERMINATED_BRACE;
+            if (!sbuf_putn(w, p, end))
+                return LEX_ERR_NOMEM;
+            p = end;
+        } else if (*p == '\'') {
             /* Single quotes: everything is literal until the next '.
              * There is no escape inside single quotes, not even \'. */
             const char *close = strchr(p + 1, '\'');
@@ -108,20 +170,25 @@ static lex_status_t read_word(const char **pp, sbuf_t *w)
         } else if (*p == '"') {
             /* Double quotes: scan to the matching ", skipping over
              * backslash-escaped characters so that \" doesn't close. */
-            if (!sbuf_putc(w, *p++))
-                return LEX_ERR_NOMEM;
-            while (*p && *p != '"') {
-                if (*p == '\\' && p[1]) {
-                    if (!sbuf_putc(w, *p++))
-                        return LEX_ERR_NOMEM;
+            /* Double quotes: find the matching ", skipping \" and any
+             * ${...} inside (which may contain quotes of its own). */
+            const char *end = skip_dquoted(p);
+            if (!end) {
+                /* Say which one is missing: a " or a }. */
+                const char *q = p + 1;
+                while (*q && *q != '"') {
+                    if (*q == '\\' && q[1])
+                        q += 2;
+                    else if (q[0] == '$' && q[1] == '{' && !lex_skip_braced(q))
+                        return LEX_ERR_UNTERMINATED_BRACE;
+                    else
+                        q++;
                 }
-                if (!sbuf_putc(w, *p++))
-                    return LEX_ERR_NOMEM;
-            }
-            if (*p != '"')
                 return LEX_ERR_UNTERMINATED_DQUOTE;
-            if (!sbuf_putc(w, *p++))
+            }
+            if (!sbuf_putn(w, p, end))
                 return LEX_ERR_NOMEM;
+            p = end;
         } else if (*p == '\\') {
             if (p[1] == '\n') {
                 p += 2;          /* backslash-newline: line continuation,
@@ -251,6 +318,7 @@ const char *lex_status_message(lex_status_t s)
     case LEX_OK:                      return "ok";
     case LEX_ERR_UNTERMINATED_SQUOTE: return "unexpected EOF while looking for matching `''";
     case LEX_ERR_UNTERMINATED_DQUOTE: return "unexpected EOF while looking for matching `\"'";
+    case LEX_ERR_UNTERMINATED_BRACE:  return "unexpected EOF while looking for matching `}'";
     case LEX_ERR_NOMEM:               return "out of memory";
     }
     return "?";

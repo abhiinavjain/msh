@@ -33,7 +33,9 @@ static int decode_wait_status(int status)
     return 1;   /* stopped/continued: not reachable until job control */
 }
 
-int exec_external(char *const argv[])
+extern char **environ;
+
+int exec_external(char *const argv[], char **envp)
 {
     /* Flush our own stdio buffers BEFORE fork(). Otherwise any unwritten
      * output sitting in the parent's buffer is copied into the child and
@@ -48,6 +50,10 @@ int exec_external(char *const argv[])
 
     if (pid == 0) {
         /* ---- child ---- */
+        /* Swap in the environment we built. execvp() reads PATH from
+         * `environ`, so `PATH=/x cmd` also changes where cmd is searched
+         * for, exactly as in bash. Only the child's copy changes. */
+        environ = envp;
         execvp(argv[0], argv);
 
         /* execvp only returns on failure. Pick the exit code a POSIX

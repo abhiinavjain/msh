@@ -48,6 +48,7 @@ typedef enum {
     LEX_OK = 0,
     LEX_ERR_UNTERMINATED_SQUOTE,
     LEX_ERR_UNTERMINATED_DQUOTE,
+    LEX_ERR_UNTERMINATED_BRACE,
     LEX_ERR_NOMEM
 } lex_status_t;
 
@@ -56,6 +57,11 @@ typedef enum {
 lex_status_t lex(const char *line, token_list_t *out);
 
 void token_list_free(token_list_t *list);
+
+/* `p` points at the '$' of "${". Return a pointer just past the matching
+ * '}', honouring quotes and nested ${...} inside; NULL if there is none.
+ * Shared by the lexer (to keep ${x:-a b} one word) and the expander. */
+const char *lex_skip_braced(const char *p);
 
 const char *token_type_name(token_type_t t);
 const char *lex_status_message(lex_status_t s);

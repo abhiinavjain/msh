@@ -108,6 +108,13 @@ int main(void)
     expect_tokens("echo ''", "WORD:echo WORD:''");
     expect_tokens("echo a\\\nb", "WORD:echo WORD:ab");   /* continuation */
 
+    /* --- ${...} is one unit inside a word --- */
+    expect_tokens("echo ${x:-a b}", "WORD:echo WORD:${x:-a b}");
+    expect_tokens("echo ${x:-a|b;c}d", "WORD:echo WORD:${x:-a|b;c}d");
+    expect_tokens("echo \"${x:-\"a b\"}\"", "WORD:echo WORD:\"${x:-\"a b\"}\"");
+    expect_tokens("echo ${a:-${b:-c d}}", "WORD:echo WORD:${a:-${b:-c d}}");
+    expect_tokens("echo $x|y", "WORD:echo WORD:$x PIPE:| WORD:y");
+
     /* --- comments --- */
     expect_tokens("ls # comment | here", "WORD:ls");
     expect_tokens("echo a#b", "WORD:echo WORD:a#b");
@@ -117,6 +124,9 @@ int main(void)
     expect_lex_error("echo 'oops", LEX_ERR_UNTERMINATED_SQUOTE);
     expect_lex_error("echo \"oops", LEX_ERR_UNTERMINATED_DQUOTE);
     expect_lex_error("echo \"oops\\\"", LEX_ERR_UNTERMINATED_DQUOTE);
+    expect_lex_error("echo ${x", LEX_ERR_UNTERMINATED_BRACE);
+    expect_lex_error("echo \"${x\"", LEX_ERR_UNTERMINATED_BRACE);
+    expect_lex_error("echo ${x:-'}", LEX_ERR_UNTERMINATED_BRACE);
 
     /* --- quote removal --- */
     expect_unquoted("abc", "abc");
